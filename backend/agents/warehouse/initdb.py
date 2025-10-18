@@ -8,7 +8,7 @@ VALUES (?, ?, ?, ?, ?)
 """, [
     ("BAT4000", "Battery 4000mAh", 120, 100, 500),
     ("LCD15", "15-inch LCD Screen", 300, 200, 500),
-    ("CPU7000", "CPU i7-7000", 180, 150, 400),
+    ("CPU7000", "CPU i7-7000", 120, 150, 400),
 ])
 conn.commit()
 conn.close()

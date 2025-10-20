@@ -136,3 +136,41 @@ Build a simulated **manufacturing digital twin** that combines a frontend produc
 3. Seed inventory DB
 4. Implement WarehouseAgent (monitor & trigger)
 5. Test manually, then proceed to BuyerAgent
+
+
+
+
+
+
+
+[WarehouseAgent] detects low inventory (auto trigger)
+        │
+        ▼
+[BuyerAgent] creates purchase request → sends to NegotiationAgent
+        │
+        ▼
+[NegotiationAgent] requests quotes from multiple SupplierAgents
+        │
+        ▼
+[SupplierAgents] respond with QuoteResponse messages
+        │
+        ▼
+[NegotiationAgent] compares bids (with LLM or logic)
+        │
+        ▼
+[BuyerAgent] confirms best offer and instructs LogisticsAgent
+        │
+        ▼
+[LogisticsAgent] creates shipment and updates TrackingAgent
+        │
+        ▼
+[TrackingAgent] sends shipment status updates → WarehouseAgent
+        │
+        ▼
+[WarehouseAgent] confirms receipt
+        │
+        ▼
+[FinanceAgent] validates and releases payment
+        │
+        ▼
+[UI/Dashboard] updates live event feed and status visualization

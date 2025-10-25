@@ -1,7 +1,9 @@
 import sqlite3
 from uagents import Agent, Context
+from backend.agents.logistics.db import get_shipment_details
+from backend.shared.event_bus import publish_event
 from backend.shared.message_models import DeliveryNotification, PurchaseRequest
-from backend.agents.warehouse.db import init_db, get_low_stock_items, mark_reorder_pending
+from backend.agents.warehouse.db import get_inventory_item_id, init_db, get_low_stock_items, mark_reorder_pending, mark_restocked
 
 warehouse = Agent(
     name="warehouse_agent",
@@ -13,8 +15,9 @@ warehouse = Agent(
 # Initialize database
 init_db()
 
-# CORRECT buyer address
 BUYER_ADDRESS = "agent1q09h7c0xu2va8lrtezw59njcv37vxxl9n85amc04nvr0w9ez6emz2fnzrx2"
+
+WAREHOUSE_ID = "WH-001"  # You can store this in config/env
 
 # Periodic task: check stock every 60 seconds
 @warehouse.on_interval(period=60.0)
@@ -25,7 +28,7 @@ async def check_inventory(ctx: Context):
         ctx.logger.info("Stock levels are healthy.")
         return
 
-    for name, qty, target in low_items:
+    for item_id, name, qty, target in low_items:
         order_quantity = target - qty
         ctx.logger.info(f"Low stock detected: {name} ({qty} left). Ordering {order_quantity} units.")
         await ctx.send(
@@ -33,24 +36,60 @@ async def check_inventory(ctx: Context):
             PurchaseRequest(item=name, quantity=order_quantity, max_unit_price=50.0)
         )
         mark_reorder_pending(name)
-        ctx.logger.info(f"Marked {name} as reorder_pending to prevent duplicates.")
+        
+        publish_event(
+            source="WarehouseAgent",
+            event_type="low_stock_detected",
+            message=f"Low stock detected for {name}. Order of {order_quantity} units sent to BuyerAgent.",
+            data={
+                "warehouse_id": WAREHOUSE_ID,
+                "inventory_id": item_id,
+                "item": name,
+                "current_quantity": qty,
+                "order_quantity": order_quantity,
+                "target_quantity": target
+            }
+        )
 
+        ctx.logger.info(f"Marked {name} as reorder_pending to prevent duplicates.")
 
 @warehouse.on_message(model=DeliveryNotification)
 async def handle_delivery(ctx: Context, sender: str, msg: DeliveryNotification):
-    mark_restocked(msg.item, msg.new_quantity)
-    ctx.logger.info(f"Restock complete for {msg.item} ({msg.new_quantity} units).")
+    ctx.logger.info(f"📦 Delivery confirmation received for shipment {msg.shipment_id}")
 
-def mark_restocked(item_name: str, new_quantity: int):
-    conn = sqlite3.connect("warehouse.db")
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE inventory
-        SET quantity = ?, reorder_pending = 0
-        WHERE name = ?
-    """, (new_quantity, item_name))
-    conn.commit()
-    conn.close()
+    shipment = get_shipment_details(msg.shipment_id)
+    if not shipment:
+        ctx.logger.warning(f"⚠️ Shipment details not found for ID {msg.shipment_id}. Cannot restock.")
+        
+        publish_event(
+            source="WarehouseAgent",
+            event_type="shipment_error",
+            message=f"Shipment details not found for ID {msg.shipment_id}",
+            data={"shipment_id": msg.shipment_id}
+        )
+        return
+
+    item = shipment["item"]
+    quantity = shipment["quantity"]
+    item_id = get_inventory_item_id(item)
+
+    ctx.logger.info(f"✅ Shipment details fetched: {item} ({quantity} units). Updating inventory...")
+    mark_restocked(item, quantity)
+    ctx.logger.info(f"📦 Restock complete for {item}: added {quantity} units to inventory.")
+    
+    publish_event(
+        source="WarehouseAgent",
+        event_type="restock_complete",
+        message=f"Restock complete for Shipment ID {msg.shipment_id} ({item}, +{quantity})",
+        data={
+            "warehouse_id": WAREHOUSE_ID,
+            "shipment_id": msg.shipment_id,
+            "inventory_id": item_id,
+            "item": item,
+            "quantity_added": quantity
+        }
+    )
+
 
 if __name__ == "__main__":
     print(f"Warehouse agent address: {warehouse.address}")

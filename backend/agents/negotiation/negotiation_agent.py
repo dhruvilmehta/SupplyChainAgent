@@ -1,6 +1,7 @@
-import asyncio
-import random
 from uagents import Agent, Context
+from backend.agents.negotiation.db import get_supplier_quotes
+from backend.agents.negotiation.db import init_db
+from backend.shared.event_bus import publish_event
 from backend.shared.message_models import NegotiationResult, PurchaseRequest, SupplierQuote
 
 negotiation_agent = Agent(
@@ -10,44 +11,84 @@ negotiation_agent = Agent(
     endpoint=["http://127.0.0.1:8010/submit"]
 )
 # agent1qwx9j9a8d8ejkmu4t95xkuw4tjxtrdcw6tcfjgy92ck5xg0f7fgxuyvc5ht
-# Internal supplier database
-SUPPLIERS = {
-    "Supplier A": {"base_price": 38, "delivery_days": 3},
-    "Supplier B": {"base_price": 42, "delivery_days": 2},
-    "Supplier C": {"base_price": 36, "delivery_days": 5},
-}
+
+# Initialize supplier database
+init_db()
+
+NEGOTIATION_AGENT_ID = "NEG-001"
 
 @negotiation_agent.on_message(model=PurchaseRequest)
 async def handle_purchase_request(ctx: Context, sender: str, msg: PurchaseRequest):
     """
-    Receive a purchase request from BuyerAgent and simulate
-    multiple supplier quotes (hardcoded/randomized).
+    Handle purchase requests dynamically using supplier DB.
     """
-    ctx.logger.info(f"🤝 Received purchase request for {msg.item} ({msg.quantity})")
-
-    # Simulate supplier quotes (no SupplierAgent yet)
-    quotes = []
-    for name, data in SUPPLIERS.items():
-        unit_price = round(random.uniform(data["base_price"] - 2, data["base_price"] + 2), 2)
-        delivery_time = max(1, data["delivery_days"] + random.randint(-1, 1))
-        quotes.append({
-            "supplier": name,
-            "price": unit_price,
-            "eta": delivery_time
-        })
-        ctx.logger.info(f"💰 {name} quote: ${unit_price}/unit, ETA {delivery_time} days")
-
-    # Simulate waiting time as if quotes were received asynchronously
-    await asyncio.sleep(3)
-
-    # Pick best quote (lowest price, then fastest delivery)
-    best = sorted(quotes, key=lambda q: (q["price"], q["eta"]))[0]
-    ctx.logger.info(
-        f"✅ Best offer: {best['supplier']} "
-        f"@ ${best['price']}/unit (ETA {best['eta']} days)"
+    ctx.logger.info(f"🤝 Received purchase request: {msg.item} x{msg.quantity}")
+    
+    publish_event(
+        source="NegotiationAgent",
+        event_type="negotiation_started",
+        message=f"Negotiation started for {msg.item} ({msg.quantity} units) from BuyerAgent.",
+        data={
+            "negotiation_id": NEGOTIATION_AGENT_ID,
+            "buyer_agent": sender,
+            "item": msg.item,
+            "quantity": msg.quantity
+        }
     )
 
-    # Send the result to BuyerAgent
+    # Fetch quotes dynamically
+    quotes = get_supplier_quotes(msg.item, msg.quantity)
+    quote_records = []
+    for q in quotes:
+        ctx.logger.info(
+            f"💰 {q['supplier']}: ${q['price']}/unit, ETA {q['eta']} days, "
+            f"Reliability {q['reliability']*100:.1f}%"
+        )
+        quote_records.append({
+            "supplier": q["supplier"],
+            "price": q["price"],
+            "eta": q["eta"],
+            "reliability": q["reliability"]
+        })
+
+    publish_event(
+        source="NegotiationAgent",
+        event_type="quotes_fetched",
+        message=f"Fetched {len(quotes)} supplier quotes for {msg.item}.",
+        data={
+            "negotiation_id": NEGOTIATION_AGENT_ID,
+            "item": msg.item,
+            "quantity": msg.quantity,
+            "quotes": quote_records
+        }
+    )
+
+    # Evaluate quotes (multi-criteria: price + reliability + speed)
+    def score(q):
+        return (q["price"] * 0.7) - (q["reliability"] * 10) + (q["eta"] * 0.3)
+
+    best = sorted(quotes, key=score)[0]
+
+    ctx.logger.info(
+        f"✅ Selected {best['supplier']} as best supplier: ${best['price']}/unit, "
+        f"ETA {best['eta']} days, Reliability {best['reliability']*100:.1f}%"
+    )
+
+    publish_event(
+        source="NegotiationAgent",
+        event_type="best_supplier_selected",
+        message=f"Best supplier chosen: {best['supplier']} for {msg.item} (${best['price']}/unit).",
+        data={
+            "negotiation_id": NEGOTIATION_AGENT_ID,
+            "item": msg.item,
+            "quantity": msg.quantity,
+            "chosen_supplier": best["supplier"],
+            "unit_price": best["price"],
+            "delivery_time_days": best["eta"],
+            "reliability": best["reliability"]
+        }
+    )
+
     result = NegotiationResult(
         item=msg.item,
         quantity=msg.quantity,
@@ -57,7 +98,23 @@ async def handle_purchase_request(ctx: Context, sender: str, msg: PurchaseReques
     )
 
     await ctx.send(sender, result)
-    ctx.logger.info("📨 Sent best quote result to BuyerAgent.")
+    ctx.logger.info(f"📨 Sent NegotiationResult to BuyerAgent for {msg.item}.")
+
+    publish_event(
+        source="NegotiationAgent",
+        event_type="negotiation_completed",
+        message=f"Negotiation completed for {msg.item}, selected {best['supplier']}.",
+        data={
+            "negotiation_id": NEGOTIATION_AGENT_ID,
+            "buyer_agent": sender,
+            "item": msg.item,
+            "quantity": msg.quantity,
+            "chosen_supplier": best["supplier"],
+            "final_price": best["price"],
+            "delivery_time_days": best["eta"]
+        }
+    )
+
 
 if __name__ == "__main__":
     print(f"Supplier agent address: {negotiation_agent.address}")

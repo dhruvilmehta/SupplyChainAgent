@@ -20,7 +20,7 @@ def get_low_stock_items():
     conn = sqlite3.connect("warehouse.db")
     cur = conn.cursor()
     cur.execute("""
-        SELECT name, quantity, target_quantity
+        SELECT item_id, name, quantity, target_quantity
         FROM inventory
         WHERE quantity < reorder_threshold
           AND reorder_pending = 0
@@ -49,6 +49,14 @@ def mark_restocked(item_name: str, new_quantity: int):
     """, (new_quantity, item_name))
     conn.commit()
     conn.close()
+    
+def get_inventory_item_id(item_name: str):
+    conn = sqlite3.connect("warehouse.db")
+    cur = conn.cursor()
+    cur.execute("SELECT item_id FROM inventory WHERE name = ?", (item_name,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 init_db()
 print(get_low_stock_items())
